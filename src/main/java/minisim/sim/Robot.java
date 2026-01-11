@@ -102,9 +102,9 @@ public class Robot
         // If on a charger and not full, wait!
         // check the own coordinates in the internal map
         if (internalMap[y][x] == Field.CHARGER && energy < 100) {
-            System.out.println("Robot is charging... (Energy: " + energy + "%)");
             // Sending NONE triggers the recharge effect in Environment without moving
             environment.moveRobot(name, Direction.NONE);
+            System.out.println("Round: " + environment.getTurn() + " |Robot is charging... (Energy: " + energy + "%)");
             return; // Skip the rest of the turn
         }
 
@@ -125,7 +125,7 @@ public class Robot
 
         // Recalculate if path is empty, blocked, or if we switched targets
         if (currentPath.isEmpty() || isPathBlocked()) {
-            // We clear the path to force A* to find the best route to the CURRENT target
+            // We clear the path to force A* to find the best route to the current target
             System.out.println("Recalculating path to " + targetDescription + " | Energy: " + energy);
             calculatePathWithMemory(finalTarget[0], finalTarget[1]);
         }
@@ -141,7 +141,7 @@ public class Robot
         if (nextDir != null) {
             if (environment.canMoveTo(name, nextDir)) {
                 environment.moveRobot(name, nextDir);
-                System.out.println("Round: " + environment.getTurn() + " | Robot moved to " + nextDir + " to (" + x + ", " + y + ")");
+                System.out.println("Round: " + environment.getTurn() + " | Robot moved to (" + x + ", " + y + ") via " + nextDir + " | Energy: " + energy);
             } else {
                 System.out.println("Unexpected blockage at (" + x + "," + y + ")! Recalculating next turn...");
                 // Force recalculation next turn
