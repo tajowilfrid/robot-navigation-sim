@@ -126,7 +126,7 @@ public class Robot
                 int globalY = this.y - radius + dy;
                 int globalX = this.x - radius + dx;
 
-                // Check boundaries
+                // Check boundaries of the map
                 if (globalY >= 0 && globalY < internalMap.length && 
                     globalX >= 0 && globalX < internalMap[0].length) {
                     
@@ -152,6 +152,7 @@ public class Robot
             case DOWN: checkY++; break;
             case LEFT: checkX--; break;
             case RIGHT: checkX++; break;
+            default: break;
         }
 
         // If we know this spot and it is an obstacle or lava, the path is blocked/dangerous
@@ -166,8 +167,7 @@ public class Robot
     }
 
     /**
-     * Runs A* algorithm on the INTERNAL MAP.
-     * Treat 'null' (unknown areas) as walkable (EMPTY).
+     * Runs A* algorithm on the INTERNAL MAP to find a path to the target
      */
     private void calculatePathWithMemory() {
         // Clear old path
@@ -175,10 +175,9 @@ public class Robot
         
         int[] targetPos = environment.getGoal();
         
-        // Priority Queue to store nodes to be explored, ordered by F cost
-        PriorityQueue<Node> openSet = new PriorityQueue<>(Comparator.comparingDouble(n -> n.fCost));
-        
-        // Set to keep track of visited nodes to avoid cycles and redundant processing
+        // Priority Queue ordered by F cost (lowest first)
+        PriorityQueue<Node> openSet = new PriorityQueue<>();
+        // Set to keep track of visited coordinates
         Set<String> closedSet = new HashSet<>();
         
         // Initialize start node
@@ -202,36 +201,37 @@ public class Robot
             for (Direction dir : Direction.values()) {
                 if (dir == Direction.NONE) continue;
                 
-                int newX = current.x;
-                int newY = current.y;
+                int nextX = current.x;
+                int nextY = current.y;
                 
                 // Determine coordinates of the neighbor
                 switch (dir) {
-                    case UP: newY--; break;
-                    case DOWN: newY++; break;
-                    case LEFT: newX--; break;
-                    case RIGHT: newX++; break;
+                    case UP: nextY--; break;
+                    case DOWN: nextY++; break;
+                    case LEFT: nextX--; break;
+                    case RIGHT: nextX++; break;
                 }
                 
                 // Boundary check
-                if (newY >= 0 && newY < internalMap.length && newX >= 0 && newX < internalMap[0].length) {
+                if (nextY >= 0 && nextY < internalMap.length && nextX >= 0 && nextX < internalMap[0].length) {
                     
-                    // Memory check
-                    Field knownField = internalMap[newY][newX];
+                    // Skip if already visited
+                    if (closedSet.contains(nextX + "," + nextY)) continue;
+
+                    // walkability check
+                    Field knownField = internalMap[nextY][nextX];
                     
-                    // If we know it's an OBSTACLE or LAVA, we ignore this path.
-                    // If it is NULL (Unknown) or EMPTY/CHARGER/START/TARGET, we walk there.
+                    // If we know it's an OBSTACLE or LAVA, we ignore this path
                     if (knownField == Field.OBSTACLE || knownField == Field.LAVA) {
                         continue;
                     }
                     
-                    if (closedSet.contains(newX + "," + newY)) continue;
-                    
                     double newGCost = current.gCost + 1;
-                    double newHCost = calculateHeuristic(newX, newY, targetPos[0], targetPos[1]);
+                    double newHCost = calculateHeuristic(nextX, nextY, targetPos[0], targetPos[1]);
                     
                     // Add to open set
-                    Node neighbor = new Node(newX, newY, current, newGCost, newHCost);
+                    Node neighbor = new Node(nextX, nextY, current, newGCost, newHCost);
+                    neighbor.directionFromParent = dir; // Store direction directly
                     openSet.add(neighbor);
                 }
             }
@@ -250,21 +250,16 @@ public class Robot
     /**
      * Backtracks from the target node to the start node to build the list of directions
      */
-    private void reconstructPath(Node targetNode) {
+    private void reconstructPath(Node endNode) {
         LinkedList<Direction> pathStack = new LinkedList<>();
-        Node current = targetNode;
-		
+        Node current = endNode;
+        
         while (current.parent != null) {
-            Node parent = current.parent;
-            int dx = current.x - parent.x;
-            int dy = current.y - parent.y;
-            
-            if (dx == 1) pathStack.addFirst(Direction.RIGHT);
-            else if (dx == -1) pathStack.addFirst(Direction.LEFT);
-            else if (dy == 1) pathStack.addFirst(Direction.DOWN);
-            else if (dy == -1) pathStack.addFirst(Direction.UP);
-            
-            current = parent;
+            // To store the direction in the node, so we can just grab it
+            if (current.directionFromParent != null) {
+                pathStack.addFirst(current.directionFromParent);
+            }
+            current = current.parent;
         }
         this.currentPath.addAll(pathStack);
     }
@@ -272,12 +267,13 @@ public class Robot
     /**
      * Helper class to represent a position in the pathfinding process
      */
-    private class Node {
+    private class Node implements Comparable<Node> {
         int x, y;
         Node parent; // Reference to previous node to retrace path
         double gCost; // Cost from start
         double hCost; // Heuristic cost to target
         double fCost; // Total cost (G + H)
+        Direction directionFromParent; // Which move brought us here?
 
         public Node(int x, int y, Node parent, double gCost, double hCost) {
             this.x = x;
@@ -286,6 +282,11 @@ public class Robot
             this.gCost = gCost;
             this.hCost = hCost;
             this.fCost = gCost + hCost;
+        }
+
+        @Override
+        public int compareTo(Node other) {
+            return Double.compare(this.fCost, other.fCost);
         }
     }
 
