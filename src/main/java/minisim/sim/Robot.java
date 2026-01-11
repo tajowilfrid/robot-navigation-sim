@@ -12,51 +12,54 @@ public class Robot
     private int energy;
     private Environment environment;
     
-    // Stores the calculated path (list of directions to follow)
-    private Queue<Direction> calculatedPath;
+    // Internal memory of the world
+    private Field[][] internalMap;
+    private boolean isMapInitialized = false;
+
+    // Stores the current calculated path
+    private Queue<Direction> currentPath;
 
     public Robot(String name, Environment environment) 
     {
         this.name = name;
         this.environment = environment;
         environment.addRobot(this);
-        this.calculatedPath = new LinkedList<>();
+        this.currentPath = new LinkedList<>();
     }
     
     public String getName() 
-    {
-        return name;
-    }
+	{ 
+		return name; 
+	}
 
     public int getX() 
-    {
-        return x;
-    }
-    
+	{ 
+		return x; 
+	}
+
     public void setX(int x) 
-    {
-        this.x = x;
-    }
+	{ 
+		this.x = x; 
+	}
 
     public int getY() 
-    {
-        return y;
-    }
-    
+	{ 
+		return y; 
+	}
+
     public void setY(int y) 
-    {
-        this.y = y;
-    }
+	{ 
+		this.y = y; 
+	}
 
     public int getEnergy() 
-    {
-        return energy;
-    }
-    
+	{ 
+		return energy; 
+	}
     public void setEnergy(int energy) 
-    {
-        this.energy = energy;
-    }
+	{ 
+		this.energy = energy; 
+	}
 
     public boolean isAtTarget() 
     {
@@ -64,27 +67,46 @@ public class Robot
     }
 
     /**
-     * Executes the next step of the simulation.
-     * Uses A* to calculate the path once, then follows it.
+     * Initializes the internal map dimensions
+     */
+    private void initMemory() {
+        Field[][] trueGrid = environment.getEnvironment();
+        this.internalMap = new Field[trueGrid.length][trueGrid[0].length];
+        this.isMapInitialized = true;
+    }
+
+    /**
+     * Main simulation step for Local Navigation.
+     * - Update internal map based on local view.
+     * - Plan a path using A* on the internal map.
+     * - Move.
      */
     public void takeAction() 
     {
-        // Calculate path if we haven't done it yet or if the path is empty
-        if (calculatedPath.isEmpty()) {
-            System.out.println("Calculating path using A*...");
-            calculateAStarPath();
+        if (!isMapInitialized) {
+            initMemory();
         }
 
-        // Get the next step from our queue
-        Direction nextDir = calculatedPath.poll();
+        // explorae internal map with local view (Radius 3)
+        updateInternalMap(3);
+
+        // plan if we have no path or the current path is blocked by a newly discovered obstacle
+        if (currentPath.isEmpty() || isPathBlocked()) {
+            System.out.println("Recalculating path based on new knowledge...");
+            calculatePathWithMemory();
+        }
+
+        // execution of next step in path
+        Direction nextDir = currentPath.poll();
 
         if (nextDir != null) {
             if (environment.canMoveTo(name, nextDir)) {
                 environment.moveRobot(name, nextDir);
-                System.out.println("Round: " + environment.getTurn() + " | Robot moved: " + nextDir);
+                System.out.println("Round: " + environment.getTurn() + " | Robot moved to (" + x + ", " + y + ") via " + nextDir);
             } else {
-                System.out.println("Path blocked! Waiting...");
-                // In a dynamic world, we would trigger a recalculation here
+                System.out.println("Unexpected blockage! Waiting...");
+                // Force recalculation next turn
+                currentPath.clear(); 
             }
         } else {
             System.out.println("No path found or target reached.");
@@ -92,12 +114,65 @@ public class Robot
     }
 
     /**
-     * Implementation of the A* (A-Star) Pathfinding Algorithm.
-     * It populates the 'calculatedPath' queue with directions.
+     * Looks around (radius) and saves the info into internalMap.
      */
-    private void calculateAStarPath() {
-        // Get the global map from the environment [cite: 221]
-        Field[][] grid = environment.getEnvironment();
+    private void updateInternalMap(int radius) {
+        // Get local view from environment
+        Field[][] view = environment.getLocalEnvironment(name, radius);
+        
+        // Map local view coordinates to global internalMap coordinates
+        for (int dy = 0; dy < view.length; dy++) {
+            for (int dx = 0; dx < view[dy].length; dx++) {
+                int globalY = this.y - radius + dy;
+                int globalX = this.x - radius + dx;
+
+                // Check boundaries
+                if (globalY >= 0 && globalY < internalMap.length && 
+                    globalX >= 0 && globalX < internalMap[0].length) {
+                    
+                    // Save what we see into our memory
+                    internalMap[globalY][globalX] = view[dy][dx];
+                }
+            }
+        }
+    }
+
+    /**
+     * Checks if the next step in our current queue is now known to be an obstacle.
+     */
+    private boolean isPathBlocked() {
+        if (currentPath.isEmpty()) return false;
+        
+        Direction next = currentPath.peek();
+        int checkX = x;
+        int checkY = y;
+        
+        switch (next) {
+            case UP: checkY--; break;
+            case DOWN: checkY++; break;
+            case LEFT: checkX--; break;
+            case RIGHT: checkX++; break;
+        }
+
+        // If we know this spot and it is an obstacle or lava, the path is blocked/dangerous
+        if (checkY >= 0 && checkY < internalMap.length && checkX >= 0 && checkX < internalMap[0].length) {
+            Field f = internalMap[checkY][checkX];
+            // If f is null, we don't know it yet, so we assume it's fine.
+            if (f == Field.OBSTACLE || f == Field.LAVA) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Runs A* algorithm on the INTERNAL MAP.
+     * Treat 'null' (unknown areas) as walkable (EMPTY).
+     */
+    private void calculatePathWithMemory() {
+        // Clear old path
+        currentPath.clear();
+        
         int[] targetPos = environment.getGoal();
         
         // Priority Queue to store nodes to be explored, ordered by F cost
@@ -138,17 +213,21 @@ public class Robot
                     case RIGHT: newX++; break;
                 }
                 
-                // Check if the neighbor is valid
-                if (newY >= 0 && newY < grid.length && newX >= 0 && newX < grid[0].length) {
+                // Boundary check
+                if (newY >= 0 && newY < internalMap.length && newX >= 0 && newX < internalMap[0].length) {
                     
-                    // Skip Obstacles
-                    if (grid[newY][newX] == Field.OBSTACLE) continue;
+                    // Memory check
+                    Field knownField = internalMap[newY][newX];
                     
-                    // Skip if already evaluated
+                    // If we know it's an OBSTACLE or LAVA, we ignore this path.
+                    // If it is NULL (Unknown) or EMPTY/CHARGER/START/TARGET, we walk there.
+                    if (knownField == Field.OBSTACLE || knownField == Field.LAVA) {
+                        continue;
+                    }
+                    
                     if (closedSet.contains(newX + "," + newY)) continue;
                     
-                    // Calculate costs
-                    double newGCost = current.gCost + 1; // Distance from start (+1 per step)
+                    double newGCost = current.gCost + 1;
                     double newHCost = calculateHeuristic(newX, newY, targetPos[0], targetPos[1]);
                     
                     // Add to open set
@@ -157,7 +236,7 @@ public class Robot
                 }
             }
         }
-        System.out.println("No path found!");
+        System.out.println("Target unreachable in internal map! (Or stuck)");
     }
 
     /**
@@ -174,7 +253,7 @@ public class Robot
     private void reconstructPath(Node targetNode) {
         LinkedList<Direction> pathStack = new LinkedList<>();
         Node current = targetNode;
-        
+		
         while (current.parent != null) {
             Node parent = current.parent;
             int dx = current.x - parent.x;
@@ -187,9 +266,7 @@ public class Robot
             
             current = parent;
         }
-        
-        this.calculatedPath.addAll(pathStack);
-        System.out.println("Path calculated with " + calculatedPath.size() + " steps.");
+        this.currentPath.addAll(pathStack);
     }
 
     /**
