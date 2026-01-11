@@ -5,8 +5,22 @@ import java.util.*;
 import minisim.sim.Environment.Direction;
 import minisim.sim.Environment.Field;
 
+/**
+ * Robot Control System using a Finite State Machine (FSM)
+ * To structure behavior into distinct states.
+ */
 public class Robot 
 {
+    // FSM STATE DEFINITION
+    public enum State {
+        SCANNING,   // Explore the environment
+        ANALYZING,  // Check energy, location, and decide next high-level goal
+        PLANNING,   // Calculate path to the determined destination
+        MOVING,     // Execute movement
+        CHARGING,   // Wait on a charger
+        FINISHED    // Target reached
+    }
+
     private String name;
     private int x, y;
     private int energy;
@@ -16,13 +30,19 @@ public class Robot
     private Field[][] internalMap;
     private boolean isMapInitialized = false;
 
+    // FSM State
+    private State currentState;
+
     // Stores the current calculated path
     private Queue<Direction> currentPath;
 
     // Memory for found charging stations
     private List<int[]> knownChargers;
 
-    // Configuration for Task 3
+    // Current intended destination coordinates
+    private int[] currentDestination;
+
+    // Configuration
     private static final int ENERGY_THRESHOLD = 40; // If energy < 40, go charge
     private static final double COST_NORMAL = 1.0;
     private static final double COST_LAVA = 100.0; // High penalty for Lava
@@ -32,43 +52,49 @@ public class Robot
         this.name = name;
         this.environment = environment;
         environment.addRobot(this);
+        
+        // Initialize structures
         this.currentPath = new LinkedList<>();
         this.knownChargers = new ArrayList<>();
+        
+        // Initial State
+        this.currentState = State.SCANNING;
     }
     
+    // Getters & Setters
     public String getName() 
-	{ 
-		return name; 
-	}
+    { 
+        return name; 
+    }
 
     public int getX() 
-	{ 
-		return x; 
-	}
-
+    { 
+        return x; 
+    }
+    
     public void setX(int x) 
-	{ 
-		this.x = x; 
-	}
+    { 
+        this.x = x; 
+    }
 
     public int getY() 
-	{ 
-		return y; 
-	}
+    { 
+        return y; 
+    }
 
     public void setY(int y) 
-	{ 
-		this.y = y; 
-	}
+    { 
+        this.y = y; 
+    }
 
     public int getEnergy() 
-	{ 
-		return energy; 
-	}
+    { 
+        return energy; 
+    }
     public void setEnergy(int energy) 
-	{ 
-		this.energy = energy; 
-	}
+    { 
+        this.energy = energy; 
+    }
 
     public boolean isAtTarget() 
     {
@@ -92,65 +118,149 @@ public class Robot
      */
     public void takeAction() 
     {
-        if (!isMapInitialized) {
-            initMemory();
-        }
+        if (!isMapInitialized) initMemory();
 
-        // explorae internal map with local view (Radius 3)
+        System.out.println("FSM State: " + currentState + " | Energy: " + energy);
+
+        switch (currentState) {
+            case SCANNING:
+                handleScanningState();
+                break;
+            case ANALYZING:
+                handleAnalyzingState();
+                break;
+            case PLANNING:
+                handlePlanningState();
+                break;
+            case MOVING:
+                handleMovingState();
+                break;
+            case CHARGING:
+                handleChargingState();
+                break;
+            case FINISHED:
+                System.out.println("Mission accomplished. Holding position.");
+                break;
+        }
+    }
+
+    /**
+     * State: SCANNING
+     * Task: Update internal map using sensors.
+     * Transition: Always -> ANALYZING
+     */
+    private void handleScanningState() {
         updateInternalMap(3);
+        currentState = State.ANALYZING;
+        // To call takeAction again immediately to not waste a turn just thinking
+        takeAction(); 
+    }
 
-        // If on a charger and not full, wait!
-        // check the own coordinates in the internal map
-        if (internalMap[y][x] == Field.CHARGER && energy < 100) {
-            // Sending NONE triggers the recharge effect in Environment without moving
-            environment.moveRobot(name, Direction.NONE);
-            System.out.println("Round: " + environment.getTurn() + " |Robot is charging... (Energy: " + energy + "%)");
-            return; // Skip the rest of the turn
+    /**
+     * Check victory conditions, energy levels and current location.
+     * Transitions: -> FINISHED, -> CHARGING, -> PLANNING
+     */
+    private void handleAnalyzingState() {
+        // Check if Target Reached
+        if (isAtTarget()) {
+            currentState = State.FINISHED;
+            return;
         }
 
-        // To determine current destination
-        int[] finalTarget = environment.getGoal();
-        String targetDescription = "Target";
+        // Check if it is ON a charger and need energy
+        if (internalMap[y][x] == Field.CHARGER && energy < 100) {
+            System.out.println(">> Arrived at Charger. Starting recharge.");
+            currentState = State.CHARGING;
+            return;
+        }
+
+        // To determine High-Level Goal based on Energy
+        int[] globalTarget = environment.getGoal();
+        int[] intendedTarget = globalTarget;
 
         // If energy is critical and we know a charger, go there, but only if we are not already full
-        if (this.energy < ENERGY_THRESHOLD && !knownChargers.isEmpty()) {
+        if (energy < ENERGY_THRESHOLD && !knownChargers.isEmpty()) {
             int[] nearestCharger = getNearestKnownCharger();
             if (nearestCharger != null) {
-                finalTarget = nearestCharger;
-                targetDescription = "Charger (" + finalTarget[0] + "," + finalTarget[1] + ")";
-            } else {
-                System.out.println("Low Energy! No reachable charger found. Risking it to Target.");
+                intendedTarget = nearestCharger;
+                // if it is already full or close to full, ignore threshold logic
             }
         }
 
-        // Recalculate if path is empty, blocked, or if we switched targets
-        if (currentPath.isEmpty() || isPathBlocked()) {
-            // We clear the path to force A* to find the best route to the current target
-            System.out.println("Recalculating path to " + targetDescription + " | Energy: " + energy);
-            calculatePathWithMemory(finalTarget[0], finalTarget[1]);
+        // Check if the destination changed or if we don't have a path
+        boolean destinationChanged = (currentDestination == null) || 
+                                     (currentDestination[0] != intendedTarget[0] || currentDestination[1] != intendedTarget[1]);
+
+        if (currentPath.isEmpty() || destinationChanged || isPathBlocked()) {
+            this.currentDestination = intendedTarget;
+            currentState = State.PLANNING;
+        } else {
+            // Path is valid and target hasn't changed
+            currentState = State.MOVING;
         }
+    }
+
+    /**
+     * State: CHARGING
+     * Task: Rest to regain energy.
+     * Transition: -> SCANNING (when full)
+     */
+    private void handleChargingState() {
+        if (energy >= 100) {
+            System.out.println(">> Battery Full. Resuming mission.");
+            currentState = State.SCANNING;
+            // Immediate transition
+            takeAction();
+        } else {
+            // Stay here and charge
+            environment.moveRobot(name, Direction.NONE);
+        }
+    }
+
+    /**
+     * State: PLANNING
+     * Task: Calculate A* path.
+     * Transition: -> MOVING (if path found) or back to SCANNING (if failed/wait)
+     */
+    private void handlePlanningState() {
+        String targetName = (currentDestination[0] == environment.getGoal()[0] && currentDestination[1] == environment.getGoal()[1]) 
+                            ? "Goal" : "Charger";
         
-        // execution of next step in path
+        System.out.println(">> Planning path to " + targetName + " (" + currentDestination[0] + "," + currentDestination[1] + ")");
+        
+        calculatePathWithMemory(currentDestination[0], currentDestination[1]);
+
+        if (!currentPath.isEmpty()) {
+            currentState = State.MOVING;
+        } else {
+            System.out.println(">> No path found. Waiting/Scanning again.");
+            currentState = State.SCANNING; // Retry next turn, maybe new info appears?
+        }
+    }
+
+    /**
+     * State: MOVING
+     * Execute one step of the path.
+     * Transition: -> SCANNING (always, to re-evaluate environment after every step)
+     */
+    private void handleMovingState() {
         if (currentPath.isEmpty()) {
-            System.out.println("No path found (or already at destination).");
+            currentState = State.SCANNING;
             return;
         }
 
         Direction nextDir = currentPath.poll();
 
-        if (nextDir != null) {
-            if (environment.canMoveTo(name, nextDir)) {
-                environment.moveRobot(name, nextDir);
-                System.out.println("Round: " + environment.getTurn() + " | Robot moved to (" + x + ", " + y + ") via " + nextDir + " | Energy: " + energy);
-            } else {
-                System.out.println("Unexpected blockage at (" + x + "," + y + ")! Recalculating next turn...");
-                // Force recalculation next turn
-                currentPath.clear(); 
-            }
+        if (environment.canMoveTo(name, nextDir)) {
+            environment.moveRobot(name, nextDir);
+            currentState = State.SCANNING; 
         } else {
-            System.out.println("No path found or target reached.");
+            System.out.println(">> Path blocked unexpectedly! Re-evaluating.");
+            currentPath.clear();
+            currentState = State.SCANNING; // Loop back to scan and replan
         }
     }
+
 
     /**
      * Looks around (radius) and saves the info into internalMap.
@@ -170,10 +280,10 @@ public class Robot
                     globalX >= 0 && globalX < internalMap[0].length) {
                     
                     Field seenField = view[dy][dx];
-                    // Save what we see into the memory
+                    // Save what it see into the memory
                     internalMap[globalY][globalX] = seenField;
 
-                    // NEW: If we see a charger, add it to the list
+                    // If it see a charger, add it to the list
                     if (seenField == Field.CHARGER) {
                         addKnownCharger(globalX, globalY);
                     }
@@ -190,7 +300,7 @@ public class Robot
             if (c[0] == cx && c[1] == cy) return; // Already known
         }
         knownChargers.add(new int[]{cx, cy});
-        System.out.println("Discovered new Charger at (" + cx + "," + cy + ")");
+        System.out.println("Info: Discovered new Charger at (" + cx + "," + cy + ")");
     }
 
     /**
@@ -212,7 +322,7 @@ public class Robot
 
     /**
      * Checks if the next step is a hard OBSTACLE.
-     * Lava is NOT considered a block here, because A* decides if we walk on it.
+     * Lava is NOT considered a block here, because A* decides if it walk on it.
      */
     private boolean isPathBlocked() {
         if (currentPath.isEmpty()) return false;
@@ -230,11 +340,8 @@ public class Robot
         }
 
         if (checkY >= 0 && checkY < internalMap.length && checkX >= 0 && checkX < internalMap[0].length) {
-            Field f = internalMap[checkY][checkX];
-            // Only strictly block Obstacles. 
-            if (f == Field.OBSTACLE) {
-                return true;
-            }
+            // Only strictly block Obstacles.
+            return internalMap[checkY][checkX] == Field.OBSTACLE;
         }
         return false;
     }
@@ -262,7 +369,7 @@ public class Robot
             // Get node with lowest F cost
             Node current = openSet.poll();
             
-             // Check if we reached the target
+             // Check if it reached the target
             if (current.x == targetX && current.y == targetY) {
                 reconstructPath(current);
                 return;
@@ -297,12 +404,8 @@ public class Robot
                     
                     if (knownField == Field.OBSTACLE) continue; // Hard wall
 
-                    double moveCost = COST_NORMAL;
-                    
-                    // If it is Lava, increase cost significantly to avoid it if possible
-                    if (knownField == Field.LAVA) {
-                        moveCost = COST_LAVA; 
-                    }
+                     // If it is Lava, increase cost significantly to avoid it if possible
+                    double moveCost = (knownField == Field.LAVA) ? COST_LAVA : COST_NORMAL;
                     
                     double newGCost = current.gCost + moveCost;
                     double newHCost = calculateHeuristic(nextX, nextY, targetX, targetY);
@@ -314,8 +417,6 @@ public class Robot
                 }
             }
         }
-        // If no path found, output info
-        System.out.println("A* could not find a path to (" + targetX + "," + targetY + ")");
     }
 
     /**
@@ -334,7 +435,7 @@ public class Robot
         Node current = endNode;
         
         while (current.parent != null) {
-            // To store the direction in the node, so we can just grab it
+            // To store the direction in the node, so it can just grab it
             if (current.directionFromParent != null) {
                 pathStack.addFirst(current.directionFromParent);
             }
