@@ -19,12 +19,21 @@ public class Robot
     // Stores the current calculated path
     private Queue<Direction> currentPath;
 
+    // Memory for found charging stations
+    private List<int[]> knownChargers;
+
+    // Configuration for Task 3
+    private static final int ENERGY_THRESHOLD = 40; // If energy < 40, go charge
+    private static final double COST_NORMAL = 1.0;
+    private static final double COST_LAVA = 100.0; // High penalty for Lava
+
     public Robot(String name, Environment environment) 
     {
         this.name = name;
         this.environment = environment;
         environment.addRobot(this);
         this.currentPath = new LinkedList<>();
+        this.knownChargers = new ArrayList<>();
     }
     
     public String getName() 
@@ -90,21 +99,51 @@ public class Robot
         // explorae internal map with local view (Radius 3)
         updateInternalMap(3);
 
-        // plan if we have no path or the current path is blocked by a newly discovered obstacle
-        if (currentPath.isEmpty() || isPathBlocked()) {
-            System.out.println("Recalculating path based on new knowledge...");
-            calculatePathWithMemory();
+        // If on a charger and not full, wait!
+        // check the own coordinates in the internal map
+        if (internalMap[y][x] == Field.CHARGER && energy < 100) {
+            System.out.println("Robot is charging... (Energy: " + energy + "%)");
+            // Sending NONE triggers the recharge effect in Environment without moving
+            environment.moveRobot(name, Direction.NONE);
+            return; // Skip the rest of the turn
         }
 
+        // To determine current destination
+        int[] finalTarget = environment.getGoal();
+        String targetDescription = "Target";
+
+        // If energy is critical and we know a charger, go there, but only if we are not already full
+        if (this.energy < ENERGY_THRESHOLD && !knownChargers.isEmpty()) {
+            int[] nearestCharger = getNearestKnownCharger();
+            if (nearestCharger != null) {
+                finalTarget = nearestCharger;
+                targetDescription = "Charger (" + finalTarget[0] + "," + finalTarget[1] + ")";
+            } else {
+                System.out.println("Low Energy! No reachable charger found. Risking it to Target.");
+            }
+        }
+
+        // Recalculate if path is empty, blocked, or if we switched targets
+        if (currentPath.isEmpty() || isPathBlocked()) {
+            // We clear the path to force A* to find the best route to the CURRENT target
+            System.out.println("Recalculating path to " + targetDescription + " | Energy: " + energy);
+            calculatePathWithMemory(finalTarget[0], finalTarget[1]);
+        }
+        
         // execution of next step in path
+        if (currentPath.isEmpty()) {
+            System.out.println("No path found (or already at destination).");
+            return;
+        }
+
         Direction nextDir = currentPath.poll();
 
         if (nextDir != null) {
             if (environment.canMoveTo(name, nextDir)) {
                 environment.moveRobot(name, nextDir);
-                System.out.println("Round: " + environment.getTurn() + " | Robot moved to (" + x + ", " + y + ") via " + nextDir);
+                System.out.println("Round: " + environment.getTurn() + " | Robot moved to " + nextDir + " to (" + x + ", " + y + ")");
             } else {
-                System.out.println("Unexpected blockage at (" + x + "," + y + ")! Waiting...");
+                System.out.println("Unexpected blockage at (" + x + "," + y + ")! Recalculating next turn...");
                 // Force recalculation next turn
                 currentPath.clear(); 
             }
@@ -130,15 +169,50 @@ public class Robot
                 if (globalY >= 0 && globalY < internalMap.length && 
                     globalX >= 0 && globalX < internalMap[0].length) {
                     
-                    // Save what we see into our memory
-                    internalMap[globalY][globalX] = view[dy][dx];
+                    Field seenField = view[dy][dx];
+                    // Save what we see into the memory
+                    internalMap[globalY][globalX] = seenField;
+
+                    // NEW: If we see a charger, add it to the list
+                    if (seenField == Field.CHARGER) {
+                        addKnownCharger(globalX, globalY);
+                    }
                 }
             }
         }
     }
 
     /**
-     * Checks if the next step in our current queue is now known to be an obstacle.
+     * Helper to add a charger to the list only if it's new.
+     */
+    private void addKnownCharger(int cx, int cy) {
+        for (int[] c : knownChargers) {
+            if (c[0] == cx && c[1] == cy) return; // Already known
+        }
+        knownChargers.add(new int[]{cx, cy});
+        System.out.println("Discovered new Charger at (" + cx + "," + cy + ")");
+    }
+
+    /**
+     * Scans for the closest Charger (C) based on simple distance.
+     */
+    private int[] getNearestKnownCharger() {
+        int[] bestCharger = null;
+        double minDist = Double.MAX_VALUE;
+
+        for (int[] c : knownChargers) {
+            double dist = calculateHeuristic(this.x, this.y, c[0], c[1]);
+            if (dist < minDist) {
+                minDist = dist;
+                bestCharger = c;
+            }
+        }
+        return bestCharger;
+    }
+
+    /**
+     * Checks if the next step is a hard OBSTACLE.
+     * Lava is NOT considered a block here, because A* decides if we walk on it.
      */
     private boolean isPathBlocked() {
         if (currentPath.isEmpty()) return false;
@@ -155,11 +229,10 @@ public class Robot
             default: break;
         }
 
-        // If we know this spot and it is an obstacle or lava, the path is blocked/dangerous
         if (checkY >= 0 && checkY < internalMap.length && checkX >= 0 && checkX < internalMap[0].length) {
             Field f = internalMap[checkY][checkX];
-            // If f is null, we don't know it yet, so we assume it's fine.
-            if (f == Field.OBSTACLE || f == Field.LAVA) {
+            // Only strictly block Obstacles. 
+            if (f == Field.OBSTACLE) {
                 return true;
             }
         }
@@ -167,29 +240,30 @@ public class Robot
     }
 
     /**
-     * Runs A* algorithm on the INTERNAL MAP to find a path to the target
+     * * Runs A* algorithm on the INTERNAL MAP to find a path to the target
+     * Weighted A* Implementation.
+     * Calculates path to (targetX, targetY).
      */
-    private void calculatePathWithMemory() {
+    private void calculatePathWithMemory(int targetX, int targetY) {
         // Clear old path
         currentPath.clear();
-        
-        int[] targetPos = environment.getGoal();
+
         
         // Priority Queue ordered by F cost (lowest first)
         PriorityQueue<Node> openSet = new PriorityQueue<>();
         // Set to keep track of visited coordinates
         Set<String> closedSet = new HashSet<>();
         
-        // Initialize start node
-        Node startNode = new Node(this.x, this.y, null, 0, calculateHeuristic(this.x, this.y, targetPos[0], targetPos[1]));
+         // Initialize start node
+        Node startNode = new Node(this.x, this.y, null, 0, calculateHeuristic(this.x, this.y, targetX, targetY));
         openSet.add(startNode);
         
         while (!openSet.isEmpty()) {
             // Get node with lowest F cost
             Node current = openSet.poll();
             
-            // Check if we reached the target
-            if (current.x == targetPos[0] && current.y == targetPos[1]) {
+             // Check if we reached the target
+            if (current.x == targetX && current.y == targetY) {
                 reconstructPath(current);
                 return;
             }
@@ -221,13 +295,17 @@ public class Robot
                     // walkability check
                     Field knownField = internalMap[nextY][nextX];
                     
-                    // If we know it's an OBSTACLE or LAVA, we ignore this path
-                    if (knownField == Field.OBSTACLE || knownField == Field.LAVA) {
-                        continue;
+                    if (knownField == Field.OBSTACLE) continue; // Hard wall
+
+                    double moveCost = COST_NORMAL;
+                    
+                    // If it is Lava, increase cost significantly to avoid it if possible
+                    if (knownField == Field.LAVA) {
+                        moveCost = COST_LAVA; 
                     }
                     
-                    double newGCost = current.gCost + 1;
-                    double newHCost = calculateHeuristic(nextX, nextY, targetPos[0], targetPos[1]);
+                    double newGCost = current.gCost + moveCost;
+                    double newHCost = calculateHeuristic(nextX, nextY, targetX, targetY);
                     
                     // Add to open set
                     Node neighbor = new Node(nextX, nextY, current, newGCost, newHCost);
@@ -236,7 +314,8 @@ public class Robot
                 }
             }
         }
-        System.out.println("Target unreachable in internal map! (Or stuck)");
+        // If no path found, output info
+        System.out.println("A* could not find a path to (" + targetX + "," + targetY + ")");
     }
 
     /**
