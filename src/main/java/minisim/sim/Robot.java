@@ -104,7 +104,7 @@ public class Robot
                 environment.moveRobot(name, nextDir);
                 System.out.println("Round: " + environment.getTurn() + " | Robot moved to (" + x + ", " + y + ") via " + nextDir);
             } else {
-                System.out.println("Unexpected blockage! Waiting...");
+                System.out.println("Unexpected blockage at (" + x + "," + y + ")! Waiting...");
                 // Force recalculation next turn
                 currentPath.clear(); 
             }
